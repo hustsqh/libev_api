@@ -10,8 +10,6 @@
 #include "event.h"
 #include "api.h"
 
-/*lint -e160 -e102 -e10 -e42 -e830 -e64 -e40 -e63 -e14 -e15 */
-
 
 static pthread_key_t s_errcode_key = 0;
 static pthread_once_t s_key_once = PTHREAD_ONCE_INIT;
@@ -773,7 +771,5 @@ int libev_api_sinst_io_destroy(libev_io_t **io)
 
 
 #endif
-
-/*lint +e160 +e102 +e10 +e42 +e830 +e64 +e40 +e63 +e14 +e15 */
 
 
