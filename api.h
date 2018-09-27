@@ -1,6 +1,8 @@
 #ifndef __API_H__
 #define __API_H__
 
+#include "list.h"
+
 #define INVALID_THREAD_ID (-1)
 #define INVALID_FD (-1)
 
@@ -30,26 +32,32 @@ typedef enum
 
 typedef struct
 {
-    void (*fun)(void *data);
-    void *data;
-}libev_sfun_t;
-
-typedef struct
-{
     void (*fun)(void *ev, void *data);
     void *data;
 }libev_data_t;
 
+typedef struct{
+    struct list_head node;
+    void (*fun)(void *ev, void *data); // do not destory data, must destory it on destory function
+    void (*destory)(void *data);
+    void *data;
+    float delay;
+    float occur;
+}libev_event_t;
+
 typedef struct
 {
-    void *ev;
+    struct ev_loop *ev;
     pthread_t thd_id;
     int pipefd[2];
 #define read_fd  pipefd[0]
 #define write_fd pipefd[1]
     ev_io io;
     LIBEV_LOOP_STATE state;
-    libev_sfun_t init;
+    libev_data_t init;
+    
+    struct list_head delay_list;
+    ev_timer list_timer;
 }libev_inst_st;
 
 
@@ -90,3 +98,4 @@ typedef struct libev_io_s
 #endif
 
 #endif
+

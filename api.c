@@ -7,7 +7,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "ev.h"
-#include "event.h"
 #include "api.h"
 
 
@@ -99,7 +98,7 @@ void log_msg(const char *file_name, size_t lineno, const char *fmt, ...)
 #if 1
 static void libev_event_cb(struct ev_loop *loop, ev_io *io_w, int e)
 {
-    libev_sfun_t event;
+    libev_data_t event;
     int rd_n = 0;
 
     memset(&event, 0, sizeof(event));
@@ -127,7 +126,8 @@ static void libev_event_cb(struct ev_loop *loop, ev_io *io_w, int e)
             LOG("read pipe fatal, read data over %u", sizeof(event));
             break;
         }else if(rd_n == (int)sizeof(event)){
-            event.fun(event.data);
+            libev_io_t *ev_io = container_of(io_w, libev_io_t, io);
+            event.fun(ev_io->ev_st, event.data);
             break;
         }else{
             LOG("read pipe error!(%d:%s)\n", errno, strerror(errno));
@@ -155,6 +155,7 @@ static libev_inst_st *libev_alloc()
     ev->state = LIBEV_LOOP_INVALID;
     ev->init.fun = NULL;
     ev->init.data = NULL;
+    INIT_LIST_HEAD(&(ev->delay_list));
 
     return ev;
 }
@@ -164,7 +165,7 @@ static void thread_clean(libev_inst_st *ev)
 {
     if(ev){
         if(ev->ev)
-            event_base_free(ev->ev);
+            ev_loop_destroy(ev->ev);
         if(ev->read_fd != INVALID_FD)
             close(ev->read_fd);
         if(ev->write_fd != INVALID_FD)
@@ -173,28 +174,36 @@ static void thread_clean(libev_inst_st *ev)
     }
 }
 
+static void fake_timer_cb(struct ev_loop *loop, ev_timer *w, int revents)
+{
+    // never run here
+}
+
+
 static void * thread_start(void *param)
 {
     libev_inst_st *ev = (libev_inst_st *)param;
+
+    ev_timer_init(&ev->list_timer, fake_timer_cb, 1, 0);
 
     ev_io_init(&ev->io, libev_event_cb, ev->read_fd, EV_READ);
 	
 	ev_io_start(ev->ev, &ev->io);
 
-    if(ev->init.fun) ev->init.fun(ev->init.data);
+    if(ev->init.fun) ev->init.fun(ev, ev->init.data);
 
-    int ret = event_base_loop(ev->ev, 0);
+    ev_run(ev->ev, 0);
 
     thread_clean(ev);
 
-    LOG("Event loop over, return %d!\n", ret);
+    LOG("Event loop over, return!\n");
 
     return NULL;
 }
 
-int libev_api_add_event(libev_inst_st *ev_st, void (*cb)(void *data), void *data)
+int libev_api_add_event(libev_inst_st *ev_st, void (*cb)(void *ev, void *data), void *data)
 {
-    libev_sfun_t event;
+    libev_data_t event;
     size_t write_n = 0;
     ssize_t ret = 0;
 
@@ -252,7 +261,7 @@ static void libev_thread_destroy(libev_inst_st *ev)
 }
 
 
-libev_inst_st * libev_api_inst_create(void (*cb)(void *data), void *data)
+libev_inst_st * libev_api_inst_create(void (*cb)(void *ev, void *data), void *data)
 {
     int ret = 0;
     libev_inst_st *ev = NULL;
@@ -262,7 +271,7 @@ libev_inst_st * libev_api_inst_create(void (*cb)(void *data), void *data)
         return NULL;
     }
 
-    ev->ev = event_init();
+    ev->ev = ev_loop_new(EVFLAG_AUTO);
     if(ev->ev == NULL){
         set_errcode(LIBEV_E_EVLIB);
         goto Error;
@@ -374,12 +383,13 @@ libev_timer_t *libev_api_create_timer(libev_inst_st *ev_st,  void (*cb)(void * t
     pt->ev_st = ev_st;
     pt->send_fun = NULL;
 
-#if 1
+#if 0
     libev_create_timer(ev_st, pt);
 #else
     if(check_self_thread(ev_st)){
         libev_create_timer(ev_st, pt);
     }else{
+        int ret = 0;
         pt->send_fun = libev_create_timer;
         ret = libev_api_add_event(ev_st, create_timer_send_cb, pt);
         if(ret){
@@ -650,6 +660,147 @@ int libev_api_watchio_destroy(libev_io_t **io)
     return 0;
 }
 
+static void libev_delay_timer_cb(struct ev_loop *loop, ev_timer *w, int revents)
+{
+    libev_inst_st *inst = container_of(w, libev_inst_st, list_timer);
+    libev_event_t *pos = NULL, *next = NULL;
+    double now = ev_time();
+
+    list_for_each_entry_safe(pos, next, &inst->delay_list, node){
+        if(pos->occur <= now){
+            pos->fun(inst, pos->data);
+            list_del(&pos->node);
+            if(pos->destory){
+                pos->destory(pos->data);
+            }
+            free(pos);
+        }else{
+            double delay = (pos->occur - now);
+            ev_timer_stop(inst->ev, &inst->list_timer);
+            ev_timer_init(&inst->list_timer, libev_delay_timer_cb, delay, 0);
+            ev_timer_start(inst->ev, &inst->list_timer);
+            break;
+        }
+    }
+}
+
+static void libev_send_event_delay(void *ev, void *data)
+{
+    libev_inst_st *inst = (libev_inst_st *)ev;
+    libev_event_t *event = (libev_event_t *)data;
+    libev_event_t *pos = NULL, *next = NULL;
+    int get_first = 0, count = 0;
+
+    list_for_each_entry_safe(pos, next, &(inst->delay_list), node){
+        count++;
+        if(event->occur < pos->occur){
+            list_add_before(&event->node, &pos->node);
+            break;
+        }
+        get_first = 1;
+    }
+
+    if(count == 0){
+        list_add(&event->node, &inst->delay_list);
+    }
+
+    if(!get_first){
+        ev_timer_stop(inst->ev, &inst->list_timer);
+        ev_timer_init(&inst->list_timer, libev_delay_timer_cb, event->delay, 0);
+        ev_timer_start(inst->ev, &inst->list_timer);
+    }
+}
+
+int libev_api_send_event_delay(libev_inst_st *ev_st, void (*cb)(void *, void *), void (*destory)(void *),
+                                                    void *data, double delay)
+{
+    libev_event_t *event = NULL;
+    
+    if(!ev_st || !cb){
+        set_errcode(LIBEV_E_PARAM); 
+        return -1;
+    }
+
+    if(data && !destory){
+        set_errcode(LIBEV_E_PARAM); 
+        return -1;
+    }
+
+    if(delay == 0){
+        return libev_api_add_event(ev_st, cb, data);
+    }
+
+    event = malloc(sizeof(libev_event_t));
+    if(!event){
+        set_errcode(LIBEV_E_OUT_OF_MEM); 
+        return -1;
+    }
+    memset(event, 0, sizeof(libev_event_t));
+    INIT_LIST_HEAD(&(event->node));
+    event->fun = cb;
+    event->destory = destory;
+    event->data = data;
+    event->delay = delay;
+    event->occur = delay + ev_time();
+    
+    if(check_self_thread(ev_st)){
+        libev_send_event_delay(ev_st, event);
+    }else{
+        libev_api_add_event(ev_st, libev_send_event_delay, event);
+    }
+
+    return 0;
+}
+
+
+static void libev_delete_event(void *ev, void *data)
+{
+    libev_inst_st *inst = (libev_inst_st *)ev;
+    void (*cb)(void *, void *) = (void (*)(void *, void *))data;
+    libev_event_t *pos = NULL, *next = NULL;
+    int count = 0, restart = 0;
+
+    list_for_each_entry_safe(pos, next, &(inst->delay_list), node){
+        count++;
+        if(pos->fun == cb){
+            list_del(pos);
+            if(pos->destory){
+                pos->destory(pos->data);
+            }
+            free(pos);
+            if(count == 1){
+                restart = 1;
+            }
+        }
+    }
+
+    if(restart){
+        list_for_each_entry(pos, &(inst->delay_list), node){
+            ev_timer_stop(inst->ev, &inst->list_timer);
+            ev_timer_init(&inst->list_timer, libev_delay_timer_cb, pos->delay, 0);
+            ev_timer_start(inst->ev, &inst->list_timer);
+            break;
+        }
+    }
+}
+
+
+int libev_api_delete_event(libev_inst_st *ev_st, void (*cb)(void *, void *))
+{
+    if(!ev_st || !cb){
+        set_errcode(LIBEV_E_PARAM); 
+        return -1;
+    }
+
+    if(check_self_thread(ev_st)){
+        libev_delete_event(ev_st, cb);
+    }else{
+        libev_api_add_event(ev_st, libev_delete_event, cb);
+    }
+
+    return 0;
+}
+
 
 #endif
 
@@ -685,7 +836,7 @@ void libev_api_sinst_stop()
 }
 
 
-int libev_api_sinst_add_event(void (*cb)(void *data), void *data)
+int libev_api_sinst_add_event(void (*cb)(void *ev, void *data), void *data)
 {
     if(!s_inst_ev_single) { set_errcode(LIBEV_E_INST_NOEXIST); return -1; }
 
@@ -771,5 +922,3 @@ int libev_api_sinst_io_destroy(libev_io_t **io)
 
 
 #endif
-
-

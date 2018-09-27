@@ -1,5 +1,8 @@
 #ifndef __EV_API_H__
 #define __EV_API_H__
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef enum
 {
@@ -17,8 +20,8 @@ typedef void * ev_io_id;
 extern void libev_set_log(void (*fun)(const char *));
 
 
-extern int libev_api_add_event(ev_inst_st ev_st, void (*cb)(void *data), void *data);
-extern ev_inst_st  libev_api_inst_create(void (*cb)(void *data), void *data); 
+extern int libev_api_add_event(ev_inst_st ev_st, void (*cb)(ev_inst_st inst, void *data), void *data);
+extern ev_inst_st  libev_api_inst_create(void (*cb)(ev_inst_st inst, void *data), void *data); 
 /* flag=0,use self thread, other create a new thread*/
 extern int libev_api_inst_start(ev_inst_st *ev_st, int flag);
 extern void libev_api_inst_destroy(ev_inst_st ev);
@@ -36,6 +39,13 @@ extern ev_io_id libev_api_watchio_create(ev_inst_st ev_st, int fd,
 extern int libev_api_watchio_start(ev_io_id io);
 extern int libev_api_watchio_stop(ev_io_id io);
 extern int libev_api_watchio_destroy(ev_io_id *io);
+extern int libev_api_watchio_get_fd(ev_io_id *io);
+/**
+ * data must be destory in destory function, if data is null, destory can be null
+ */
+extern int libev_api_send_event_delay(libev_inst_st * ev_st, void(* cb)(ev_inst_st inst, void *data), 
+                                        void(* destory)(void *data), void * data, double delay);
+extern int libev_api_delete_event(libev_inst_st *ev_st, void (*cb)(ev_inst_st inst, void *data));
 
 
 /* flag=0,use self thread, other create a new thread*/
@@ -56,4 +66,10 @@ extern int libev_api_sinst_io_start(ev_io_id io);
 extern int libev_api_sinst_io_stop(ev_io_id io);
 extern int libev_api_sinst_io_destroy(ev_io_id *io);
 
+#ifdef __cplusplus
+}
 #endif
+
+
+#endif
+
