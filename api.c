@@ -626,6 +626,14 @@ int libev_api_watchio_get_fd(libev_io_t *io)
     return io->fd;
 }
 
+libev_inst_st *libev_api_watchio_get_inst(libev_io_t *io)
+{
+    if(!io) {set_errcode(LIBEV_E_PARAM); return -1; }
+
+    return io->ev_st;
+}
+
+
 int libev_api_watchio_stop(libev_io_t *io)
 {
     if(!io) {set_errcode(LIBEV_E_PARAM); return -1; }
